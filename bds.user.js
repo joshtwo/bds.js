@@ -2,7 +2,7 @@
 // @name bds.js
 // @namespace deviant-garde.deviantart.com
 // @description This script adds support for Botdom Data Share in userscripts. Not recommended to use as a userscript; this is for testing.
-// @version 0.1
+// @version 0.1.1
 // @include http://chat.deviantart.com/chat/*
 // ==/UserScript==
 
