@@ -43,12 +43,10 @@ contentPageCode = function()
             // so this code needs to only be ran when we know we're in Chrome.
             if (navigator.userAgent.indexOf("Chrome") != -1) dAmn_Callbacks = [dAmnChatbase_dAmnCB];
             
-            console.log("Callbacks: ", dAmn_Callbacks);
             bds.hookStandardEvents();
         },
         parseMsg: function(pkt)
         {
-            console.log("bds message recieved!", pkt);
             var msg, evt = {};
             msg = pkt.body.split(":", 4);
             if (msg.length < 3) return;
@@ -64,7 +62,6 @@ contentPageCode = function()
         },
         triggerEvents: function(evt)
         {
-            console.log("bds event: ", evt);
             var path = [evt.ns, evt.cat, evt.cmd], level = this.callbacks, i = 0;
             do
             {
@@ -93,14 +90,10 @@ contentPageCode = function()
         },
         _hook: function(hook, type, depth, level)
         {
-            console.info("called with ", arguments)
             if (depth < type.length)
             {
                 if (!(type[depth] in level.leaves))
-                {
-                    console.log("creating leaf ", type[depth], " at depth", depth);
                     level.leaves[type[depth]] = {node: [], leaves: {}};
-                };
                 this._hook(hook, type, depth + 1, level.leaves[type[depth]]);
             }
             else level.node.push(hook);
