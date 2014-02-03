@@ -2,18 +2,21 @@
 // @name bds.js
 // @namespace deviant-garde.deviantart.com
 // @description This script adds support for Botdom Data Share in userscripts. Not recommended to use as a userscript; this is for testing.
-// @version 0.1.1
+// @version 0.1.2
 // @include http://chat.deviantart.com/chat/*
 // ==/UserScript==
 
+
+// TODO: Finish the command portion of the commands (/chat and /msg)
 contentPageCode = function()
 {
     bds = {
         metadata: {
             bdsVersion: "0.3",
+            clientVersion: "0.0.2",
             clientName: "dAmnClient/BDS",
         },
-        settings: {hideDataShare: true, selfTrigger: false}, // curently ignores hideDataShare
+        settings: {hideDataShare: true, selfTrigger: false},
         policeBots: [],
         callbacks: {node: [], leaves: {}},
         activate: function()
@@ -21,20 +24,30 @@ contentPageCode = function()
             dAmnChatbase_dAmnCB_old = dAmnChatbase_dAmnCB;
             dAmnChatbase_dAmnCB = function(e, pkt)
             {
-                try {
-                if (e == "data" && pkt.param == "chat:DataShare")
-                {
-                    if (pkt.cmd == "recv")
+                //try {
+                    // TODO:
+                    // make it so you can invisibly receive BDS messages in pchats
+                    // a debug switch will allow you to see hidden rooms as well as see
+                    // otherwise hidden BDS messages in pchats
+                    if (e == "data" && (pkt.param == "chat:DataShare" || pkt.param == "chat:DSGateway"))
                     {
-                        var sub = dAmn_ParsePacket(pkt.body);
-                        if (sub.cmd == "msg" && (bds.selfTrigger || sub.args.from != dAmn_Client_Username)) bds.parseMsg(sub);
-                        else if (sub.cmd == "join") bds.parseJoin(sub);
+                        if (pkt.cmd == "recv")
+                        {
+                            // don't forget that you'll never see this in a packet solely processed by the default client's code
+                            // you're always expected to do this manually to parse subpackets
+                            pkt.sub = dAmn_ParsePacket(pkt.body);
+                            if (pkt.sub.cmd == "msg" && (bds.selfTrigger || pkt.sub.args.from != dAmn_Client_Username)) bds.parseMsg(pkt);
+                            else if (pkt.sub.cmd == "join") bds.parseJoin(pkt.sub);
+                        }
+                        else if (pkt.cmd == "property" && pkt.args.p == 'members')
+                            bds.parseMembers(pkt);
                     }
-                    else if (pkt.cmd == "property" && pkt.args.p == 'members') bds.parseMembers(pkt);
-                }
-                else if (!(e == "join" && pkt.param == "chat:DataShare")) dAmnChatbase_dAmnCB_old(e, pkt);
-                }
-                catch (error) { console.log("Error in dAmn callback: ", error, error.message) }
+                    if (!(e == "data" && bds.settings.hideDataShare && (pkt.cmd == "join" | pkt.cmd == "part") && (pkt.param == "chat:DataShare" || pkt.param == "chat:DSGateway")))
+                    {
+                        dAmnChatbase_dAmnCB_old(e, pkt);
+                    }
+                //}
+                //catch (error) { console.log("Error in dAmn callback: ", error, error.message) }
             };
             // When I simply override the function above, all references to
             // any "dAmnChatbase_dAmnCB" points to it in Firefox.
@@ -48,18 +61,24 @@ contentPageCode = function()
         parseMsg: function(pkt)
         {
             var msg, evt = {};
-            msg = pkt.body.split(":", 4);
+            msg = pkt.sub.body.split(":", 4);
             if (msg.length < 3) return;
             evt.ns = msg[0];
             evt.cat = msg[1];
             evt.cmd = msg[2];
             evt.payload = msg[3];
-            evt.from = pkt.args.from;
+            evt.from = pkt.sub.args.from;
+            // normally "ns" is used to refer to the namespace a message packet is sent in
+            // here that meaning is overriden by "BDS command namespace", so instead we use "chat"
+            evt.chat = pkt.param; 
             if (evt.payload != null) evt.payload = evt.payload.split(',');
             
             // invoke the relevant events
             this.triggerEvents(evt);
         },
+        // currently events are only hooked on BDS messages
+        // if you want to hook/trigger general chat events I suggest you use MiddleMan or do it yourself
+        // this script isn't meant to solve that issue
         triggerEvents: function(evt)
         {
             var path = [evt.ns, evt.cat, evt.cmd], level = this.callbacks, i = 0;
@@ -128,14 +147,15 @@ contentPageCode = function()
             }
             while (pkt.body)
         },
-        send: function(ns, cat, cmd, args)
+        send: function(ns, cat, cmd, args, chat)
         {
             var bdsMsg;
             if (!(ns || cat || cmd)) return;
+            if (!chat) chat = 'chat:DataShare';
             
             bdsMsg = [ns, cat, cmd];
             if (args != null) bdsMsg.push(args.join(','));
-            dAmn_Send('chat:DataShare', 'msg main\n\n' + bdsMsg.join(':'));
+            dAmn_Send(chat, 'msg main\n\n' + bdsMsg.join(':'));
         },
         hookStandardEvents: function()
         {
@@ -145,25 +165,194 @@ contentPageCode = function()
         {
             if (this.policeBots.indexOf(evt.from) == -1) return;
             if (evt.cmd == 'ALL' || (evt.cmd == 'DIRECT' && evt.payload.indexOf(dAmn_Client_Username) != -1))
-                this.botcheckRespond(evt.from);
+                this.botcheckRespond(evt.from, evt.chat);
+            else if (evt.cmd == 'OK' && evt.payload[0] == dAmn_Client_Username) // if this comes back FAIL, we fucked up and might as well ignore it
+            {
+                dAmn_Part('chat:DSGateway');
+                dAmn_Join('chat:DataShare');
+            }
         },
-        botcheckRespond: function(user)
+        botcheckRespond: function(user, chat)
         {
-            var hash = md5((this.metadata.clientName + this.metadata.bdsVersion + dAmn_Client_Username + user).split(' ').join('').toLowerCase());
-            this.send('BDS', 'BOTCHECK', 'CLIENT', [user, this.metadata.clientName, this.metadata.bdsVersion, hash]);
+            var version = this.metadata.clientVersion + '/' + this.metadata.bdsVersion;
+            var hash = md5((this.metadata.clientName + version + dAmn_Client_Username + user).split(' ').join('').toLowerCase());
+            this.send('BDS', 'BOTCHECK', 'CLIENT', [user, this.metadata.clientName, version, hash], chat);
         },
     }
+
+    // the notification API is in a separate object from the BDS code
+    notify = {
+        // this is the element which notices go in
+        noticeTray: null,
+        // for the notices
+        addStyle: function()
+        {
+            var style = document.createElement('style');
+            style.type = 'text/css';
+            style.id = 'bds-css';
+            style.innerHTML = '#bds-notice-tray {position: absolute;bottom: 5px;right: 5px;z-index: 9001;width: 18em;}.bds-notice {position: relative;border: 1px solid #999999;background-color: #BBC2BB;padding: 5px;margin: 5px;float: left;clear: both;}.bds-notice p {padding: 10px;}.bds-notice h1 {text-align: center;}.bds-notice span.links {text-align: right;font-size: 8pt;}';
+            document.head.appendChild(style);
+        },
+        displayNotice: function(title, p, links, onClose)
+        {
+            var notice = document.createElement('div');
+            var header = document.createElement('h1');
+            var imgbox;
+            header.innerHTML = title;
+            notice.classList.add('bds-notice');
+            notice.appendChild(header);
+            notice.appendChild(p);
+            if (links)
+                notice.appendChild(links);
+            if (!onClose)
+                onClose = function(el) { el.parentNode.removeChild(el) };
+            dAmnChat_AddImgBox(notice, 'damncr-close', 'close', 'Close Notice', onClose, notice);
+
+            if (!this.noticeTray)
+            {
+                this.noticeTray = document.createElement('div');
+                this.noticeTray.id = 'bds-notice-tray';
+                document.body.appendChild(this.noticeTray);
+            }
+
+            this.noticeTray.appendChild(notice);
+            
+            return notice;
+        },
+        test: function()
+        {
+            var p = document.createElement('p');
+            var links = document.createElement('span');
+            var accept = document.createElement('a'), decline = document.createElement('a');
+            var bar = document.createElement('div');
+            accept.src = '#';
+            accept.innerHTML = 'Accept';
+            decline.src = '#';
+            decline.innerHTML = 'Decline';
+
+            p.innerHTML = 'Some fucker wants to talk to you. Is that cool with you?';
+            bar.innerHTML = ' | ';
+
+            links.classList.add('links');
+            links.appendChild(accept);
+            links.appendChild(bar);
+            links.appendChild(decline);
+            this.displayNotice('Private Chat', p, links);
+        }
+    }
+    
+    // the pchat and /msg code
+    msg = {
+        // this is the timer that controls the "user doesn't have a notice-capable client" message
+        ackTimer: {},
+        pchat: function(user) {
+            return 'pchat:' + [dAmn_Client_Username, user].sort().join(':');
+        },
+        requestChat: function(user)
+        {
+            bds.sendMsg('CDS', 'LINK', 'REQUEST', [user]);
+        },
+        // argument is the user who you're waiting for to respond, and
+        // the function to run after
+        startAckTimer: function(user, callback)
+        {
+            this.ackTimer[user] = setTimeout(callback, 10000); // supposed to be 10 seconds
+        },
+        // this handles the CDS:LINK:ACK response
+        onAck: function(evt)
+        {
+            if (evt.payload[0] == dAmn_Client_Username && this.ackTimer[evt.from])
+                clearTimeout(this.ackTimer[evt.from]);
+        },
+        showChatRequest: function(evt)
+        {
+            if (evt.from != dAmn_Client_Username) return;
+            var text = document.createElement('p');
+            var user = document.createElement('a');
+            var accept = document.createElement('a'), decline = document.createElement('a');
+            var links = document.createElement('div');
+            var pchat = msg.pchat(evt.from);
+            var noticeBox;
+            user.href = PHP.userurl(evt.from);
+            user.innerHTML = evt.from;
+            accept.href = '#';
+            accept.onclick = function() {
+                // hackish but works
+                noticeBox.parentNode.removeChild(noticeBox);
+                dAmn_Join(pchat);
+                return false;
+            }
+            accept.innerHTML = 'Accept';
+
+            decline.href = '#';
+            decline.onclick = function() {
+                noticeBox.parentNode.removeChild(noticeBox);
+                bds.send('CDS', 'LINK', 'REJECT', ['user declined to chat']);
+                return false;
+            }
+            decline.innerHTML = 'Decline';
+            
+            text.appendChild(user);
+            text.appendChild(document.createTextNode(' would like to start a private chat with you.'));
+
+            links.appendChild(accept);
+            links.appendChild(document.createTextNode(' | '));
+            links.appendChild(decline);
+            
+            noticeBox = notify.displayNotice('Private Chat', text, links, decline.onclick);
+            bds.send('CDS', 'LINK', 'ACK', [evt.from]);
+        },
+        displayRejection: function(evt)
+        {
+            // this is in case somebody fucked up their own implementation of CDS:LINK
+            // if they don't send a CDS:LINK:ACK but reject me then I have to make sure I clear the timer
+            if (this.ackTimer[evt.from])
+                this.onAck(evt);
+            
+            var pchat = this.pchat(evt.from);
+            if (pchat in dAmnChats) // send the notice in the room
+                dAmnChats.makeText('admin', "** The user declined to start a private chat with you.", null, 0);
+            else
+            {
+                var p = document.createElement('p');
+                var link = document.createElement('a');
+                link.href = PHP.userurl(evt.from);
+                link.innerHTML = evt.from;
+                p.appendChild(link);
+                p.appendChild(document.createTextNode(' declined to start a private chat with you.'));
+                notify.displayNotice('Request Rejected', p);
+            }
+        },
+        hookEvents: function()
+        {
+            bds.hook(['CDS', 'LINK', 'REQUEST'], function(evt) { msg.showChatRequest(evt) });
+            bds.hook(['CDS', 'LINK', 'REJECT'], function(evt) { msg.displayRejection(evt) });
+            bds.hook(['CDS', 'LINK', 'ACK'], function(evt) { msg.onAck(evt) });
+        },
+        // add the /msg command
+        addCommand: function()
+        {
+        },
+        activate: function()
+        {
+            this.hookEvents();
+            this.addCommand();
+        }
+    }
+
     try { 
         bds.activate(); // now everything is set in motion in the content page
+        notify.addStyle(); // for the notices
+        msg.activate(); // for pchat and /msg
     }
     catch (e) { console.log("Error activating BDS: ", e) }
 }
 
-script = document.createElement("script");
-script.id = 'bds-js';
-script.type = 'text/javascript';
-script.innerHTML = '(' + contentPageCode.toString() + ')();';
-document.getElementsByTagName('head')[0].appendChild(script);
+bdsScript = document.createElement("script");
+bdsScript.id = 'bds-js';
+bdsScript.type = 'text/javascript';
+bdsScript.innerHTML = 'try { (' + contentPageCode.toString() + ')(); } catch(e) { console.log("Error loading BDS JS: ", e) } ';
+document.getElementsByTagName('head')[0].appendChild(bdsScript);
 // and that's where it's all initialized!
 
 // minified code from blueimp's JavaScript MD5 implementation <http://github.com/blueimp/JavaScript-MD5>
