@@ -6,7 +6,6 @@
 // @include http://chat.deviantart.com/chat/*
 // ==/UserScript==
 
-
 // TODO: Finish the command portion of the commands (/chat and /msg)
 contentPageCode = function()
 {
@@ -42,6 +41,8 @@ contentPageCode = function()
                         else if (pkt.cmd == "property" && pkt.args.p == 'members')
                             bds.parseMembers(pkt);
                     }
+                    if (e == "connect")
+                        dAmn_Join('chat:DSGateway');
                     if (!(e == "data" && bds.settings.hideDataShare && (pkt.cmd == "join" | pkt.cmd == "part") && (pkt.param == "chat:DataShare" || pkt.param == "chat:DSGateway")))
                     {
                         dAmnChatbase_dAmnCB_old(e, pkt);
@@ -85,8 +86,11 @@ contentPageCode = function()
             do
             {
                 if (level.node.length > 0)
+                {
+                    console.log("Triggering event: ", evt);
                     for (var j = 0; j < level.node.length; ++j)
                         level.node[j](evt);
+                }
                 // go a deeper level in
                 level = path[i] in level.leaves ? level.leaves[path[i]] : null;
             } while (level && ++i);
@@ -250,7 +254,22 @@ contentPageCode = function()
         },
         requestChat: function(user)
         {
-            bds.sendMsg('CDS', 'LINK', 'REQUEST', [user]);
+            bds.send('CDS', 'LINK', 'REQUEST', [user]);
+            var pchat = this.pchat(user);
+            this.startAckTimer(user, function() {
+                if (pchat in dAmnChats)
+                    dAmnChats[pchat].makeText('admin', "** This user is either offline or incapable of receiving private chat notices.", null, 0);
+                else
+                {
+                    var p = document.createElement('p');
+                    var link = document.createElement('a');
+                    link.href = PHP.userurl(user);
+                    link.innerHTML = user;
+                    p.appendChild(link);
+                    p.appendChild(document.createTextNode(" is either offline or incapable of receiving private chat notices."));
+                    notify.displayNotice('No Response', p);
+                }
+            });
         },
         // argument is the user who you're waiting for to respond, and
         // the function to run after
@@ -266,7 +285,10 @@ contentPageCode = function()
         },
         showChatRequest: function(evt)
         {
-            if (evt.from != dAmn_Client_Username) return;
+            console.log('showChatRequest ran!');
+            try {
+            if (evt.payload[0] != dAmn_Client_Username) return;
+            console.log('not from ourselves');
             var text = document.createElement('p');
             var user = document.createElement('a');
             var accept = document.createElement('a'), decline = document.createElement('a');
@@ -301,6 +323,11 @@ contentPageCode = function()
             
             noticeBox = notify.displayNotice('Private Chat', text, links, decline.onclick);
             bds.send('CDS', 'LINK', 'ACK', [evt.from]);
+            }
+            catch(e)
+            {
+                console.info("showChatRequest:", e);
+            }
         },
         displayRejection: function(evt)
         {
@@ -311,7 +338,7 @@ contentPageCode = function()
             
             var pchat = this.pchat(evt.from);
             if (pchat in dAmnChats) // send the notice in the room
-                dAmnChats.makeText('admin', "** The user declined to start a private chat with you.", null, 0);
+                dAmnChats[pchat].makeText('admin', "** The user declined to start a private chat with you.", null, 0);
             else
             {
                 var p = document.createElement('p');
@@ -332,6 +359,113 @@ contentPageCode = function()
         // add the /msg command
         addCommand: function()
         {
+            dAmnChatInput_onKey_old = dAmnChatInput.prototype.onKey;
+            // the key here is to make sure we don't accidentally duplicate
+            // anything that'll happen in the default function
+            // which in more cases than not, will eventually be called next
+            // this requires the rearranging of pre-existing logic in the function
+            dAmnChatInput.prototype.onKey = function(e,kc,force)
+            {
+                try {
+                var el = this.chatinput_el, cmdre, cmd, args;
+
+                if (kc == 13 &&
+                    ( force || !this.multiline) &&
+                    (cmdre = el.value.match( /^\/([a-z]+)([\s\S]*)/m )) &&
+                    (cmd = cmdre[1].toLowerCase()) &&
+                    (cmd == 'msg' || cmd == 'chat' || cmd == 'test'))
+                {
+                    if (!this.multiline) {
+                        this.prev_multiline_str = null;
+                    }
+
+                    dAmnChatTabs_activate( this.cr.ns, true );
+
+                    // didn't tab? -- clear tablist
+                    delete this.tablist;
+                    
+                    if (el.value) {
+                        if (this.history_pos != -1  && this.history[this.history_pos] == el.value) { // posting from history.. move to the end
+                            var before = this.history.slice(0,this.history_pos);
+                            var after  = this.history.slice(this.history_pos+1);
+                            this.history = before.concat(after).concat( this.history[this.history_pos] );
+                        } else {
+                            // add to history -- limit to 300
+                            this.history = this.history.concat( el.value );
+                            if( this.history.length > 300 )
+                                this.history = this.history.slice(1);
+                        }
+                        this.history_pos = -1;
+
+                        // send non-parsed
+                        
+                        var args = null;
+                        if (cmdre[2]) {
+                            var tmp = cmdre[2].match(/^\s([\s\S]*)/);
+                            if( tmp && tmp.length )
+                                args = tmp[1];
+                        }
+
+                        if (!this.cmds[cmd]) {
+                            this.cr.channels.main.onErrorEvent('unknown command', cmd );
+                        } else if( this.cmds[cmd][0]) {
+                            if (!args) {
+                                this.cr.channels.main.onErrorEvent( cmd, 'insufficient parameters' );
+                            } else {
+                                // args required
+                                switch (cmd) {
+                                    case 'chat':
+                                        var params = args.match( /^\s*(\S*)\s*$/ );
+                                        if( params )
+                                        {
+                                            dAmn_Join( dAmn_format_pchat_ns(dAmn_Client_Username, params[1]) );
+                                            msg.requestChat(params[1]);
+                                        }
+                                        else
+                                            this.cr.channels.main.onErrorEvent( 'syntax', "/chat username" );
+                                        break;
+                                    default:
+                                }
+                            }
+                        } else {
+                            switch (cmd) {
+                                case 'test':
+                                    this.cr.channels.main.onErrorEvent('test', 'performing test command');
+                                    break;
+                                default:
+                            }
+                        }
+                    }
+                    el.value='';
+                    el.focus();
+                    return false;
+                }
+                else return dAmnChatInput_onKey_old.apply(this, arguments);
+                }
+                catch (e)
+                {
+                    console.info("dAmnChatInput_onKey: ", e);
+                    return false; 
+                }
+            };
+
+            dAmnChatInput_old = dAmnChatInput;
+            dAmnChatInput = function()
+            {
+                try {
+                dAmnChatInput_old.apply(this, arguments);
+                this.cmds['msg'] = [1];
+                this.cmds['test'] = [0];
+                if (!this.cmds['chat'])
+                    this.cmds['chat'] = [1];
+                console.info("Added new commands: ", this.cmds);
+                }
+                catch(e)
+                {
+                    console.info("dAmnChatInput: ", e);
+                }
+            };
+            dAmnChatInput.prototype = dAmnChatInput_old.prototype;
         },
         activate: function()
         {
