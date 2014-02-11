@@ -87,7 +87,7 @@ contentPageCode = function()
             {
                 if (level.node.length > 0)
                 {
-                    console.log("Triggering event: ", evt);
+                    //console.log("Triggering event: ", evt);
                     for (var j = 0; j < level.node.length; ++j)
                         level.node[j](evt);
                 }
@@ -250,7 +250,7 @@ contentPageCode = function()
         // this is the timer that controls the "user doesn't have a notice-capable client" message
         ackTimer: {},
         pchat: function(user) {
-            return 'pchat:' + [dAmn_Client_Username, user].sort().join(':');
+            return dAmn_format_pchat_ns(dAmn_Client_Username, user);
         },
         requestChat: function(user)
         {
@@ -258,7 +258,7 @@ contentPageCode = function()
             var pchat = this.pchat(user);
             this.startAckTimer(user, function() {
                 if (pchat in dAmnChats)
-                    dAmnChats[pchat].makeText('admin', "** This user is either offline or incapable of receiving private chat notices.", null, 0);
+                    dAmnChats[pchat].channels.main.makeText('admin', "** This user is either offline or incapable of receiving private chat notices.", null, 0);
                 else
                 {
                     var p = document.createElement('p');
@@ -269,6 +269,7 @@ contentPageCode = function()
                     p.appendChild(document.createTextNode(" is either offline or incapable of receiving private chat notices."));
                     notify.displayNotice('No Response', p);
                 }
+                delete msg.ackTimer[user];
             });
         },
         // argument is the user who you're waiting for to respond, and
@@ -285,10 +286,7 @@ contentPageCode = function()
         },
         showChatRequest: function(evt)
         {
-            console.log('showChatRequest ran!');
-            try {
             if (evt.payload[0] != dAmn_Client_Username) return;
-            console.log('not from ourselves');
             var text = document.createElement('p');
             var user = document.createElement('a');
             var accept = document.createElement('a'), decline = document.createElement('a');
@@ -323,11 +321,6 @@ contentPageCode = function()
             
             noticeBox = notify.displayNotice('Private Chat', text, links, decline.onclick);
             bds.send('CDS', 'LINK', 'ACK', [evt.from]);
-            }
-            catch(e)
-            {
-                console.info("showChatRequest:", e);
-            }
         },
         displayRejection: function(evt)
         {
@@ -338,7 +331,7 @@ contentPageCode = function()
             
             var pchat = this.pchat(evt.from);
             if (pchat in dAmnChats) // send the notice in the room
-                dAmnChats[pchat].makeText('admin', "** The user declined to start a private chat with you.", null, 0);
+                dAmnChats[pchat].channels.main.makeText('admin', "** The user declined to start a private chat with you.", null, 0);
             else
             {
                 var p = document.createElement('p');
